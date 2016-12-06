@@ -1,0 +1,101 @@
+Parameters:
+  ProjectName:
+    Type: String
+    Default: foomatic
+
+Resources:
+  GitRepo:
+    Type: "AWS::CodeCommit::Repository"
+    Properties:
+      RepositoryName: !Ref ProjectName
+
+  BuildRole:
+    Type: "AWS::IAM::Role"
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          -
+            Effect: "Allow"
+            Principal:
+              Service:
+                - "codebuild.amazonaws.com"
+            Action:
+              - "sts:AssumeRole"
+      Path: "/"
+      Policies:
+        -
+          PolicyName: "root"
+          PolicyDocument:
+            Version: "2012-10-17"
+            Statement:
+              # Pull from repo
+              -
+                Effect: "Allow"
+                Action:
+                  - "codecommit:GitPull"
+                Resource:
+                  - !Sub "arn:aws:codecommit:${AWS::Region}:${AWS::AccountId}:${ProjectName}"
+              # Write build logs:
+              -
+                Effect: "Allow"
+                Action:
+                  - "logs:CreateLogGroup"
+                  - "logs:CreateLogStream"
+                  - "logs:PutLogEvents"
+                Resource:
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}"
+                  - !Sub "arn:aws:logs:${AWS::Region}:${AWS::AccountId}:log-group:/aws/codebuild/${ProjectName}:*"
+              # Login to ECR:
+              -
+                Effect: "Allow"
+                Action:
+                  - "ecr:GetAuthorizationToken"
+                Resource: "*"
+              # Publish to ECR
+              -
+                Effect: "Allow"
+                Action:
+                  - "ecr:BatchCheckLayerAvailability"
+                  - "ecr:CompleteLayerUpload"
+                  - "ecr:InitiateLayerUpload"
+                  - "ecr:PutImage"
+                  - "ecr:UploadLayerPart"
+                Resource:
+                  - !Sub "arn:aws:ecr:${AWS::Region}:${AWS::AccountId}:repository/${ProjectName}"
+  Build:
+    Type: "AWS::CodeBuild::Project"
+    Properties:
+      Name:
+        Ref: ProjectName
+      ServiceRole: !GetAtt BuildRole.Arn
+      Source:
+        Type: CODECOMMIT
+        Location:
+          !GetAtt GitRepo.CloneUrlHttp
+        BuildSpec:
+          !Sub |
+            version: 0.1
+            phases:
+              pre_build:
+                commands:
+                  - aws ecr get-login --region ${AWS::Region}
+                  - $(aws ecr get-login --region ${AWS::Region})
+              build:
+                commands:
+                  - docker build -t ${ProjectName}:latest .
+                  - docker tag ${ProjectName}:latest ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}:latest
+              post_build:
+                commands:
+                  - docker push ${AWS::AccountId}.dkr.ecr.${AWS::Region}.amazonaws.com/${ProjectName}:latest
+      Artifacts:
+        Type: NO_ARTIFACTS
+      Environment:
+        Type: linuxContainer
+        ComputeType: BUILD_GENERAL1_SMALL
+        Image: aws/codebuild/docker:1.12.1
+  DockrRepo:
+    Type: "AWS::ECR::Repository"
+    Properties:
+      RepositoryName: !Ref ProjectName
+
